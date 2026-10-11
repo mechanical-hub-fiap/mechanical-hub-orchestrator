@@ -22,6 +22,15 @@ class MongoSagaRepository(
     override fun findById(transactionId: UUID): Saga? =
         mongoTemplate.findById(transactionId.toString(), TransactionRegisterDocument::class.java)?.toDomain()
 
+    override fun findByOrderId(orderId: UUID): Saga? =
+        mongoTemplate
+            .findOne(Query(Criteria.where("orderId").`is`(orderId.toString())), TransactionRegisterDocument::class.java)
+            ?.toDomain()
+
+    override fun insert(saga: Saga) {
+        mongoTemplate.insert(saga.toDocument())
+    }
+
     override fun applyChange(
         transactionId: UUID,
         change: SagaChange,

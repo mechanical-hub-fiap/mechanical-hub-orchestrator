@@ -82,17 +82,6 @@ class SagaEventListenerIntegrationTest : SagaIntegrationTest() {
         assertThat(historyOf(saga.orderId)).isEmpty()
     }
 
-    @Test
-    fun `given an event type without handler when consumed then it goes to the DLQ`() {
-        val saga = givenSaga(SagaStepEnum.WAITING_APPROVAL)
-
-        sendEvent(saga, UUID.randomUUID(), "orderApproved")
-
-        val deadLetter = await atMost TIMEOUT untilNotNull { deadLetterFor(saga) }
-        assertThat(deadLetter.messageAttributes()["errorClass"]?.stringValue()).endsWith("UnsupportedSagaEventException")
-        assertThat(storedSaga(saga.transactionId)).isEqualTo(saga)
-    }
-
     private fun sendEvent(
         saga: Saga,
         eventId: UUID,

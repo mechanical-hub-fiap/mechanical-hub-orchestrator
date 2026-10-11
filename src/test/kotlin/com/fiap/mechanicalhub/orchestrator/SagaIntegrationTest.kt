@@ -17,9 +17,9 @@ import org.springframework.data.mongodb.core.query.Criteria
 import org.springframework.data.mongodb.core.query.Query
 import java.util.UUID
 
-/** Base dos testes de integracao do consumidor: MongoDB (replica set) + LocalStack e o handler de teste. */
+/** Base dos testes de integracao do consumidor: MongoDB (replica set) + LocalStack . */
 @SpringBootTest
-@Import(TestcontainersConfiguration::class, TestSagaEventHandlersConfiguration::class)
+@Import(TestcontainersConfiguration::class)
 abstract class SagaIntegrationTest {
     @Autowired
     protected lateinit var mongoTemplate: MongoTemplate

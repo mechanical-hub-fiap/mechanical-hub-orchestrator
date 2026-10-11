@@ -8,6 +8,11 @@ import java.util.UUID
 interface SagaRepository {
     fun findById(transactionId: UUID): Saga?
 
+    fun findByOrderId(orderId: UUID): Saga?
+
+    /** `insertOne` da saga nova; `orderId` unico (`E11000` se ja existir). */
+    fun insert(saga: Saga)
+
     /**
      * Guarda de passo + atualizacao atomica (`findOneAndUpdate` filtrando
      * `currentStep`, com `$inc: { seq: n }` e `returnDocument: after`).
