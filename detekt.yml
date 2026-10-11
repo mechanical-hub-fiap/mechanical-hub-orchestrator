@@ -7,6 +7,9 @@ style:
     ignoreAnnotation: true
   ReturnCount:
     max: 3
+  MaxLineLength:
+    # Mesmo limite do ktlint (.editorconfig).
+    maxLineLength: 140
 
 performance:
   SpreadOperator:
