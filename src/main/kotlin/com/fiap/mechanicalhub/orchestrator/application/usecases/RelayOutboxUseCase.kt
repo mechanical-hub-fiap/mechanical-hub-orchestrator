@@ -5,6 +5,7 @@ import com.fiap.mechanicalhub.orchestrator.application.ports.OutboxMessage
 import com.fiap.mechanicalhub.orchestrator.application.ports.OutboxRelayStore
 import com.fiap.mechanicalhub.orchestrator.domain.enums.SagaCommandTypeEnum
 import org.slf4j.LoggerFactory
+import org.slf4j.MDC
 import org.springframework.stereotype.Service
 import java.time.Clock
 
@@ -28,6 +29,8 @@ class RelayOutboxUseCase(
                 .sortedWith(compareBy(OutboxMessage::createdAt, OutboxMessage::seq))
         var sent = 0
         for (message in ordered) {
+            MDC.put("orderId", message.orderId)
+            MDC.put("eventId", message.eventId)
             try {
                 val destination =
                     SagaCommandTypeEnum.entries.firstOrNull { it.messageType == message.eventType }?.destination
@@ -41,6 +44,9 @@ class RelayOutboxUseCase(
                 log.warn("Falha ao publicar {} (orderId={}, seq={}): {}", message.eventType, message.orderId, message.seq, e.toString())
                 store.markFailed(message.eventId, e.toString().take(MAX_ERROR_LENGTH))
                 break
+            } finally {
+                MDC.remove("orderId")
+                MDC.remove("eventId")
             }
         }
         return sent

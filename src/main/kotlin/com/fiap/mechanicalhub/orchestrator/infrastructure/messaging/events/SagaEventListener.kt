@@ -4,7 +4,6 @@ import io.awspring.cloud.sqs.annotation.SqsListener
 import io.awspring.cloud.sqs.listener.SqsHeaders
 import io.awspring.cloud.sqs.listener.Visibility
 import io.awspring.cloud.sqs.listener.acknowledgement.Acknowledgement
-import org.slf4j.LoggerFactory
 import org.springframework.messaging.Message
 import org.springframework.stereotype.Component
 
@@ -12,6 +11,8 @@ import org.springframework.stereotype.Component
  * Consumidor de `mechanical-hub-orchestrator-events.fifo` (confirmacao manual).
  * A mensagem so e apagada depois do `commitTransaction`; em erro transitorio
  * ela fica na fila, bloqueando o grupo (`orderId`) ate a proxima tentativa.
+ * O contexto de trace (`traceparent`) e extraido dos message attributes pelo
+ * agente OpenTelemetry; os logs das decisoes saem no processador.
  */
 @Component
 class SagaEventListener(
@@ -33,24 +34,13 @@ class SagaEventListener(
             }
 
             is EventDecision.Retry -> {
-                log.warn(
-                    "Erro transitorio no evento (recebimento {}), nova tentativa em {} s: {}",
-                    receiveCount,
-                    decision.delaySeconds,
-                    decision.error.toString(),
-                )
                 visibility.changeTo(decision.delaySeconds)
             }
 
             is EventDecision.DeadLetter -> {
-                log.error("Erro permanente no evento, enviado a DLQ: {}", decision.error.toString())
                 deadLetterPublisher.publish(message, decision.error)
                 acknowledgement.acknowledge()
             }
         }
-    }
-
-    private companion object {
-        val log = LoggerFactory.getLogger(SagaEventListener::class.java)
     }
 }
