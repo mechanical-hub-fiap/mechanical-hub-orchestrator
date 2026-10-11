@@ -12,6 +12,8 @@ data class OrchestratorProperties(
 ) {
     data class Queues(
         val orchestratorEvents: String,
+        /** DLQ da fila de eventos: destino explicito dos erros permanentes (failure_handling.md §3). */
+        val orchestratorEventsDlq: String,
         val ordersCommands: String,
         val stockCommands: String,
         val billingCommands: String,

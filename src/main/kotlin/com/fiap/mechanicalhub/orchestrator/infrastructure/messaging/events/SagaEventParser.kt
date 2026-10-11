@@ -1,0 +1,39 @@
+package com.fiap.mechanicalhub.orchestrator.infrastructure.messaging.events
+
+import com.fiap.mechanicalhub.orchestrator.application.usecases.IncomingSagaEvent
+import com.fiap.mechanicalhub.orchestrator.infrastructure.messaging.contracts.EventMessage
+import com.fiap.mechanicalhub.orchestrator.infrastructure.messaging.contracts.toDomain
+import org.springframework.stereotype.Component
+import tools.jackson.core.JacksonException
+import tools.jackson.databind.DeserializationFeature
+import tools.jackson.databind.json.JsonMapper
+
+/** Mensagem fora do contrato (JSON invalido, `type` desconhecido, campo ausente ou valor invalido): erro permanente. */
+class InvalidMessageException(
+    message: String,
+    cause: Throwable? = null,
+) : RuntimeException(message, cause)
+
+/** Converte o corpo JSON (envelope + payload no mesmo nivel) no evento de dominio, escolhendo o contrato pelo `type`. */
+@Component
+class SagaEventParser(
+    jsonMapper: JsonMapper,
+) {
+    private val reader = jsonMapper.readerFor(EventMessage::class.java).with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+
+    fun parse(body: String): IncomingSagaEvent {
+        val message =
+            try {
+                reader.readValue<EventMessage>(body)
+            } catch (exception: JacksonException) {
+                throw InvalidMessageException("Mensagem fora do contrato: ${exception.originalMessage}", exception)
+            }
+        val event =
+            try {
+                message.toDomain()
+            } catch (exception: IllegalArgumentException) {
+                throw InvalidMessageException("Valor fora do contrato em ${message.type}: ${exception.message}", exception)
+            }
+        return IncomingSagaEvent(message.eventId, event)
+    }
+}

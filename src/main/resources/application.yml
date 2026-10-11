@@ -26,6 +26,7 @@ mechanical-hub:
     # URLs das filas FIFO (outputs do mechanical-hub-infra).
     queues:
       orchestrator-events: ${ORCHESTRATOR_EVENTS_QUEUE_URL:mechanical-hub-orchestrator-events.fifo}
+      orchestrator-events-dlq: ${ORCHESTRATOR_EVENTS_DLQ_URL:mechanical-hub-orchestrator-events-dlq.fifo}
       orders-commands: ${ORDERS_COMMANDS_QUEUE_URL:mechanical-hub-orders-commands.fifo}
       stock-commands: ${STOCK_COMMANDS_QUEUE_URL:mechanical-hub-stock-commands.fifo}
       billing-commands: ${BILLING_COMMANDS_QUEUE_URL:mechanical-hub-billing-commands.fifo}

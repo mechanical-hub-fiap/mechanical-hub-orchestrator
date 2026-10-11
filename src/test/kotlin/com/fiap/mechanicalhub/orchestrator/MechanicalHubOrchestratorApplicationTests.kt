@@ -36,6 +36,7 @@ class MechanicalHubOrchestratorApplicationTests {
         val queues = orchestratorProperties.queues
 
         assertThat(queues.orchestratorEvents).isEqualTo("mechanical-hub-orchestrator-events.fifo")
+        assertThat(queues.orchestratorEventsDlq).isEqualTo("mechanical-hub-orchestrator-events-dlq.fifo")
         assertThat(queues.ordersCommands).isEqualTo("mechanical-hub-orders-commands.fifo")
         assertThat(queues.stockCommands).isEqualTo("mechanical-hub-stock-commands.fifo")
         assertThat(queues.billingCommands).isEqualTo("mechanical-hub-billing-commands.fifo")
