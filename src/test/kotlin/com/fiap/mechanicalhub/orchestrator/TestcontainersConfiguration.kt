@@ -10,5 +10,7 @@ import org.testcontainers.utility.DockerImageName
 class TestcontainersConfiguration {
     @Bean
     @ServiceConnection
-    fun mongoDbContainer(): MongoDBContainer = MongoDBContainer(DockerImageName.parse("mongo:7"))
+    fun mongoDbContainer(): MongoDBContainer =
+        // Replica set de 1 no, como em todos os ambientes (ADR-0004): sem ele nao ha transacoes.
+        MongoDBContainer(DockerImageName.parse("mongo:7")).withReplicaSet()
 }

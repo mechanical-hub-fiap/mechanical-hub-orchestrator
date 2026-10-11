@@ -1,7 +1,45 @@
 spring:
   application:
+    # Tag `application` das metricas e service.name dos traces.
     name: mechanical-hub-orchestrator
+
+  mongodb:
+    # Replica set obrigatorio em todos os ambientes (ADR-0004). Na AWS a URI vem
+    # do Secret do Kubernetes (usuario do servico criado pelo mechanical-hub-database).
+    uri: ${MONGODB_URI:mongodb://localhost:27017/mechanical_hub_orchestrator?replicaSet=rs0}
+
+  docker:
+    compose:
+      # So sobe o compose.yaml no profile local (ver application-local.yml).
+      enabled: false
+
   cloud:
     aws:
+      # Sem chave de acesso: na AWS as credenciais vem da LabRole (metadados da
+      # instancia do no do EKS), pela cadeia padrao do SDK.
       region:
         static: ${AWS_REGION:us-east-1}
+
+mechanical-hub:
+  environment: ${ENVIRONMENT:production}
+  orchestrator:
+    # URLs das filas FIFO (outputs do mechanical-hub-infra).
+    queues:
+      orchestrator-events: ${ORCHESTRATOR_EVENTS_QUEUE_URL:mechanical-hub-orchestrator-events.fifo}
+      orders-commands: ${ORDERS_COMMANDS_QUEUE_URL:mechanical-hub-orders-commands.fifo}
+      stock-commands: ${STOCK_COMMANDS_QUEUE_URL:mechanical-hub-stock-commands.fifo}
+      billing-commands: ${BILLING_COMMANDS_QUEUE_URL:mechanical-hub-billing-commands.fifo}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+      environment: ${mechanical-hub.environment}

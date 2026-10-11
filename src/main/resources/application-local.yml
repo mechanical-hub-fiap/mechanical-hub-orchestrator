@@ -1,0 +1,17 @@
+# Desenvolvimento local: MongoDB (replica set rs0) e LocalStack do compose.yaml.
+spring:
+  docker:
+    compose:
+      enabled: true
+      lifecycle-management: start-only
+  cloud:
+    aws:
+      # Credenciais ficticias aceitas pelo LocalStack (nao sao chaves AWS).
+      credentials:
+        access-key: test
+        secret-key: test
+      sqs:
+        endpoint: http://localhost:4566
+
+mechanical-hub:
+  environment: local
