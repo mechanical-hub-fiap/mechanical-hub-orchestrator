@@ -1,0 +1,41 @@
+# Ambiente local do mechanical-hub-orchestrator: MongoDB 7 (replica set de 1 no,
+# exigido pelas transacoes da ADR-0004) e LocalStack (SQS).
+# Sobe sozinho com `./mvnw spring-boot:run -Dspring-boot.run.profiles=local`
+# (spring-boot-docker-compose) ou manualmente com `docker compose up -d`.
+services:
+  mongodb:
+    image: mongo:7
+    command: ["--replSet", "rs0", "--bind_ip_all", "--port", "27017"]
+    ports:
+      - "27017:27017"
+    healthcheck:
+      # Inicia o replica set na primeira execucao (rs.initiate) e so fica
+      # saudavel quando o no e PRIMARY. O host `localhost:27017` funciona tanto
+      # dentro do container quanto na maquina (porta fixa publicada acima).
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - "try { rs.status() } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] }) }; db.hello().isWritablePrimary ? quit(0) : quit(1)"
+      interval: 5s
+      timeout: 10s
+      start_period: 10s
+      retries: 20
+    labels:
+      # A conexao com o Mongo vem de MONGODB_URI (default local em application.yml).
+      org.springframework.boot.ignore: "true"
+
+  localstack:
+    image: localstack/localstack:4.4
+    environment:
+      SERVICES: sqs
+      AWS_DEFAULT_REGION: us-east-1
+    ports:
+      - "4566:4566"
+    volumes:
+      # Filas FIFO + DLQs criadas no init (na AWS vem do mechanical-hub-infra).
+      - ./docker/localstack/init-sqs.sh:/etc/localstack/init/ready.d/init-sqs.sh:ro
+    labels:
+      # A conexao com o LocalStack e configurada pelo profile `local`.
+      org.springframework.boot.ignore: "true"
