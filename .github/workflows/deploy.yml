@@ -1,0 +1,365 @@
+name: CI/CD
+
+# PR: build, testes (unitarios, integracao e BDD com Testcontainers) e
+# SonarQube Cloud (quality gate como checagem obrigatoria). Push na main ou
+# chamada pelo deploy-all: o mesmo + imagem no ECR, deploy no EKS e smoke test
+# (health, MongoDB e SQS).
+
+on:
+  # Chamado pelo deploy-all (mechanical-hub-infra); os secrets vem por `secrets: inherit`.
+  workflow_call:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  JAVA_VERSION: '25'
+  TF_VERSION: 1.7.5
+  NAMESPACE: production
+  DEPLOYMENT: mechanical-hub-orchestrator
+  SERVICE: mechanical-hub-orchestrator-svc
+  REPOSITORY: mechanical-hub-fiap/mechanical-hub-orchestrator
+
+jobs:
+  # ── Build, testes e qualidade ─────────────────────────────────────────────
+  build:
+    name: Build, testes e Sonar
+    runs-on: ubuntu-latest
+
+    steps:
+      # Em workflow_call o checkout padrao pega o repo chamador (mechanical-hub-infra).
+      # Execucao propria: SHA do evento; chamado pelo deploy-all: main deste repo.
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPOSITORY }}
+          ref: ${{ github.repository == env.REPOSITORY && github.sha || 'main' }}
+          # O Sonar usa o historico para atribuir codigo novo.
+          fetch-depth: 0
+
+      - name: Set up Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      # Unitarios, integracao (MongoDB replica set e LocalStack em
+      # Testcontainers, no Docker do runner), BDD Cucumber do fluxo completo,
+      # ktlint, detekt e jacoco:check (cobertura minima de 80%).
+      - name: Verify
+        run: ./mvnw -B --no-transfer-progress verify
+
+      - name: SonarQube Cloud
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -z "${SONAR_TOKEN}" ]; then
+            echo "::warning::SONAR_TOKEN nao configurado: analise do SonarQube Cloud ignorada."
+            exit 0
+          fi
+          ./mvnw -B --no-transfer-progress sonar:sonar \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }} \
+            -Dsonar.qualitygate.wait=true
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: target/site/jacoco/
+          retention-days: 14
+
+      - name: Upload BDD report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cucumber-report
+          path: target/cucumber-report/
+          retention-days: 14
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: target/surefire-reports/
+          retention-days: 7
+
+  # ── Outputs da infraestrutura (somente leitura) ───────────────────────────
+  resolve-infra:
+    name: Resolver infraestrutura
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+
+    outputs:
+      eks-cluster-name: ${{ steps.tf-outputs.outputs.eks_cluster_name }}
+      ecr-repository-name: ${{ steps.tf-outputs.outputs.ecr_repository_name }}
+      orchestrator-events-queue-url: ${{ steps.tf-outputs.outputs.orchestrator_events_queue_url }}
+      orchestrator-events-dlq-url: ${{ steps.tf-outputs.outputs.orchestrator_events_dlq_url }}
+      orders-commands-queue-url: ${{ steps.tf-outputs.outputs.orders_commands_queue_url }}
+      stock-commands-queue-url: ${{ steps.tf-outputs.outputs.stock_commands_queue_url }}
+      billing-commands-queue-url: ${{ steps.tf-outputs.outputs.billing_commands_queue_url }}
+      mongodb-host: ${{ steps.tf-outputs.outputs.mongodb_host }}
+      mongodb-port: ${{ steps.tf-outputs.outputs.mongodb_port }}
+      mongodb-replica-set: ${{ steps.tf-outputs.outputs.mongodb_replica_set }}
+      mongodb-database: ${{ steps.tf-outputs.outputs.mongodb_database }}
+      mongodb-secret-name: ${{ steps.tf-outputs.outputs.mongodb_secret_name }}
+      mongodb-namespace: ${{ steps.tf-outputs.outputs.mongodb_namespace }}
+      otlp-http-endpoint: ${{ steps.tf-outputs.outputs.otlp_http_endpoint }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPOSITORY }}
+          ref: ${{ github.repository == env.REPOSITORY && github.sha || 'main' }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Read remote states
+        working-directory: ci/remote-state
+        env:
+          TF_VAR_state_bucket: mechanical-hub-tfstate-${{ secrets.AWS_ACCOUNT_ID }}
+          TF_VAR_state_region: ${{ env.AWS_REGION }}
+        run: |
+          terraform init -input=false
+          terraform apply -auto-approve -input=false
+
+      - name: Publish contract outputs
+        id: tf-outputs
+        working-directory: ci/remote-state
+        run: |
+          set -euo pipefail
+          for o in eks_cluster_name \
+                   orchestrator_events_queue_url orchestrator_events_dlq_url \
+                   orders_commands_queue_url stock_commands_queue_url billing_commands_queue_url \
+                   mongodb_host mongodb_port mongodb_replica_set mongodb_database \
+                   mongodb_secret_name mongodb_namespace; do
+            value="$(terraform output -raw "$o")"
+            if [ -z "$value" ]; then
+              echo "::error::Output '$o' veio vazio. Aplique mechanical-hub-infra e mechanical-hub-database antes deste pipeline."
+              exit 1
+            fi
+            echo "${o}=${value}" >> "$GITHUB_OUTPUT"
+          done
+
+          # Caminho do repositorio sem o host: o host contem o ID da conta e
+          # seria redigido ao passar de um job para outro.
+          echo "ecr_repository_name=$(terraform output -raw ecr_repository_url | cut -d/ -f2-)" >> "$GITHUB_OUTPUT"
+
+          # Opcional: null com a observabilidade desligada.
+          otlp="$(terraform output -json otlp_http_endpoint | jq -r '. // ""')"
+          echo "otlp_http_endpoint=${otlp}" >> "$GITHUB_OUTPUT"
+          if [ -z "$otlp" ]; then
+            echo "::warning::Coletor OpenTelemetry indisponivel: traces nao serao exportados."
+          fi
+
+  # ── Imagem no ECR ─────────────────────────────────────────────────────────
+  build-and-push:
+    name: Imagem no ECR
+    runs-on: ubuntu-latest
+    needs: [resolve-infra]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+
+    outputs:
+      image-tag: ${{ steps.image-meta.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPOSITORY }}
+          ref: ${{ github.repository == env.REPOSITORY && github.sha || 'main' }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # SHA do commit efetivamente construido (no deploy-all, a main deste repo,
+      # e nao o SHA do mechanical-hub-infra).
+      - name: Set image tag
+        id: image-meta
+        run: echo "tag=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ needs.resolve-infra.outputs.ecr-repository-name }}:${{ steps.image-meta.outputs.tag }}
+            ${{ steps.ecr-login.outputs.registry }}/${{ needs.resolve-infra.outputs.ecr-repository-name }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Deploy no EKS e smoke test ────────────────────────────────────────────
+  deploy:
+    name: Deploy no EKS
+    runs-on: ubuntu-latest
+    needs: [resolve-infra, build-and-push]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    concurrency:
+      group: deploy-production-orchestrator
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPOSITORY }}
+          ref: ${{ github.repository == env.REPOSITORY && github.sha || 'main' }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # So para obter o host do registry sem trafegar o ID da conta entre jobs.
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --name ${{ needs.resolve-infra.outputs.eks-cluster-name }} --region ${{ env.AWS_REGION }}
+
+      # Usuario e senha do orchestrator vivem so no Secret criado pelo
+      # mechanical-hub-database (namespace do MongoDB). A URI e montada aqui,
+      # mascarada no log, e vai para o Secret do servico no namespace da app.
+      - name: Build MongoDB URI
+        id: mongodb
+        env:
+          MONGODB_HOST: ${{ needs.resolve-infra.outputs.mongodb-host }}
+          MONGODB_PORT: ${{ needs.resolve-infra.outputs.mongodb-port }}
+          MONGODB_REPLICA_SET: ${{ needs.resolve-infra.outputs.mongodb-replica-set }}
+          MONGODB_DATABASE: ${{ needs.resolve-infra.outputs.mongodb-database }}
+          MONGODB_SECRET_NAME: ${{ needs.resolve-infra.outputs.mongodb-secret-name }}
+          MONGODB_NAMESPACE: ${{ needs.resolve-infra.outputs.mongodb-namespace }}
+        run: |
+          set -euo pipefail
+          read_key() {
+            kubectl get secret "$MONGODB_SECRET_NAME" -n "$MONGODB_NAMESPACE" \
+              -o "jsonpath={.data.$1}" | base64 -d
+          }
+          if ! kubectl get secret "$MONGODB_SECRET_NAME" -n "$MONGODB_NAMESPACE" > /dev/null 2>&1; then
+            echo "::error::Secret $MONGODB_NAMESPACE/$MONGODB_SECRET_NAME nao encontrado. Rode o deploy do mechanical-hub-database antes."
+            exit 1
+          fi
+          username="$(read_key username)"
+          password="$(read_key password)"
+          if [ -z "$username" ] || [ -z "$password" ]; then
+            echo "::error::Secret $MONGODB_NAMESPACE/$MONGODB_SECRET_NAME sem as chaves username/password."
+            exit 1
+          fi
+          echo "::add-mask::$password"
+
+          encode() { jq -rn --arg v "$1" '$v|@uri'; }
+          uri="mongodb://$(encode "$username"):$(encode "$password")@${MONGODB_HOST}:${MONGODB_PORT}/${MONGODB_DATABASE}?replicaSet=${MONGODB_REPLICA_SET}&authSource=${MONGODB_DATABASE}"
+          echo "::add-mask::$uri"
+
+          delimiter="EOF_$(openssl rand -hex 8)"
+          {
+            echo "uri<<${delimiter}"
+            echo "$uri"
+            echo "${delimiter}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Apply manifests
+        env:
+          ECR_REPOSITORY_URL: ${{ steps.ecr-login.outputs.registry }}/${{ needs.resolve-infra.outputs.ecr-repository-name }}
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image-tag }}
+          MONGODB_URI: ${{ steps.mongodb.outputs.uri }}
+          ORCHESTRATOR_EVENTS_QUEUE_URL: ${{ needs.resolve-infra.outputs.orchestrator-events-queue-url }}
+          ORCHESTRATOR_EVENTS_DLQ_URL: ${{ needs.resolve-infra.outputs.orchestrator-events-dlq-url }}
+          ORDERS_COMMANDS_QUEUE_URL: ${{ needs.resolve-infra.outputs.orders-commands-queue-url }}
+          STOCK_COMMANDS_QUEUE_URL: ${{ needs.resolve-infra.outputs.stock-commands-queue-url }}
+          BILLING_COMMANDS_QUEUE_URL: ${{ needs.resolve-infra.outputs.billing-commands-queue-url }}
+          OTLP_HTTP_ENDPOINT: ${{ needs.resolve-infra.outputs.otlp-http-endpoint }}
+        run: |
+          set -euo pipefail
+
+          # O agente OpenTelemetry acrescenta /v1/traces ao endpoint OTLP/HTTP.
+          export OTEL_EXPORTER_OTLP_ENDPOINT="${OTLP_HTTP_ENDPOINT}"
+          if [ -n "${OTLP_HTTP_ENDPOINT}" ]; then
+            export OTEL_TRACES_EXPORTER=otlp
+          else
+            export OTEL_TRACES_EXPORTER=none
+          fi
+
+          kubectl apply -f k8s/namespace.yaml
+          for manifest in secret.yaml configmap.yaml deployment.yaml service.yaml hpa.yaml; do
+            echo "→ $manifest"
+            envsubst < "k8s/$manifest" | kubectl apply -f -
+          done
+
+          # Secret e ConfigMap mudam sem mudar o template do pod: reinicia para
+          # que URI e filas novas (ex.: apos recriar o ambiente) sejam lidas.
+          kubectl rollout restart deployment/${{ env.DEPLOYMENT }} --namespace ${{ env.NAMESPACE }}
+
+      - name: Wait for rollout
+        run: kubectl rollout status deployment/${{ env.DEPLOYMENT }} --namespace ${{ env.NAMESPACE }} --timeout=600s
+
+      # Uma URL por pod: qualquer replica pode consumir a sonda SQS.
+      - name: Smoke test
+        env:
+          EVENTS_QUEUE_URL: ${{ needs.resolve-infra.outputs.orchestrator-events-queue-url }}
+        run: |
+          set -euo pipefail
+          urls=()
+          port=18080
+          # Pods em execucao, sem os que ainda estao terminando do rollout anterior.
+          pods="$(kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ env.DEPLOYMENT }} -o json \
+                    | jq -r '.items[] | select(.metadata.deletionTimestamp == null and .status.phase == "Running") | .metadata.name')"
+          for pod in $pods; do
+            kubectl port-forward --namespace ${{ env.NAMESPACE }} "pod/$pod" "$port:8080" > "/tmp/port-forward-$port.log" 2>&1 &
+            for _ in $(seq 1 30); do
+              curl -fs "http://localhost:$port/actuator/health/liveness" > /dev/null 2>&1 && break
+              sleep 1
+            done
+            urls+=("http://localhost:$port")
+            port=$((port + 1))
+          done
+          [ "${#urls[@]}" -gt 0 ] || { echo "::error::Nenhum pod em execucao."; exit 1; }
+          bash ci/smoke-test.sh "${urls[@]}"
+
+      - name: Debug on failure
+        if: failure()
+        run: |
+          kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ env.DEPLOYMENT }} -o wide || true
+          kubectl describe pods -n ${{ env.NAMESPACE }} -l app=${{ env.DEPLOYMENT }} | tail -80 || true
+          for pod in $(kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ env.DEPLOYMENT }} -o jsonpath='{.items[*].metadata.name}'); do
+            echo "--- $pod (anterior) ---"
+            kubectl logs "$pod" -n ${{ env.NAMESPACE }} --previous --tail=100 2>/dev/null || true
+            echo "--- $pod (atual) ---"
+            kubectl logs "$pod" -n ${{ env.NAMESPACE }} --tail=100 || true
+          done
