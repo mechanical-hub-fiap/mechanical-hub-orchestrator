@@ -1,0 +1,29 @@
+# Configuracao nao sensivel do orchestrator. Os ${...} sao preenchidos pelo
+# pipeline (envsubst) com os outputs do mechanical-hub-infra.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mechanical-hub-orchestrator-config
+  namespace: production
+  labels:
+    app: mechanical-hub-orchestrator
+    app.kubernetes.io/name: orchestrator
+
+data:
+  # Filas: outputs `sqs_queue_urls` e `sqs_dlq_urls` do mechanical-hub-infra.
+  # Sem chave de acesso: os pods usam a LabRole dos nos (metadados da instancia).
+  AWS_REGION: us-east-1
+  ORCHESTRATOR_EVENTS_QUEUE_URL: "${ORCHESTRATOR_EVENTS_QUEUE_URL}"
+  ORCHESTRATOR_EVENTS_DLQ_URL: "${ORCHESTRATOR_EVENTS_DLQ_URL}"
+  ORDERS_COMMANDS_QUEUE_URL: "${ORDERS_COMMANDS_QUEUE_URL}"
+  STOCK_COMMANDS_QUEUE_URL: "${STOCK_COMMANDS_QUEUE_URL}"
+  BILLING_COMMANDS_QUEUE_URL: "${BILLING_COMMANDS_QUEUE_URL}"
+
+  ENVIRONMENT: production
+
+  # Agente OpenTelemetry. Sem coletor no ambiente, o pipeline grava
+  # OTEL_TRACES_EXPORTER=none: o contexto continua sendo propagado pelo SQS
+  # e o trace_id segue nos logs, so nao e exportado.
+  OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT}"
+  OTEL_TRACES_EXPORTER: "${OTEL_TRACES_EXPORTER}"
+  OTEL_RESOURCE_ATTRIBUTES: deployment.environment=production

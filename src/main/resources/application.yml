@@ -40,6 +40,11 @@ management:
     health:
       probes:
         enabled: true
+      group:
+        # Sem MongoDB o pod sai do Service/NLB (readiness), mas nao e
+        # reiniciado (liveness so olha o estado da aplicacao).
+        readiness:
+          include: readinessState,mongo
   metrics:
     tags:
       application: ${spring.application.name}
