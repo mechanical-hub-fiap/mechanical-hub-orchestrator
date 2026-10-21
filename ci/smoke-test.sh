@@ -91,7 +91,15 @@ if [ -n "${EVENTS_QUEUE_URL:-}" ]; then
 
   deadline=$((SECONDS + PROBE_TIMEOUT_SECONDS))
   until [ "$(discarded_probes)" -gt "$before" ]; do
-    [ "$SECONDS" -lt "$deadline" ] || fail "sonda nao consumida em ${PROBE_TIMEOUT_SECONDS}s (confira acesso ao SQS pela LabRole e os logs do pod)"
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      # Mostra o que o consumidor registrou: RETRY = erro transitorio (ex.: MongoDB/transacao),
+      # DEAD_LETTER = fora do contrato, nada = mensagem nunca recebida (SQS/credenciais).
+      for url in "${BASE_URLS[@]}"; do
+        echo "  saga_messages_total em $url:" >&2
+        curl -fsS --max-time 10 "$url/actuator/prometheus" | grep '^saga_messages_total{' >&2 || echo "    (nenhuma mensagem processada)" >&2
+      done
+      fail "sonda nao consumida em ${PROBE_TIMEOUT_SECONDS}s (confira acesso ao SQS pela LabRole e os logs do pod)"
+    fi
     sleep 3
   done
   echo "  sonda consumida e descartada pela guarda de passo (DISCARDED_STEP_GUARD)"

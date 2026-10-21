@@ -355,6 +355,18 @@ jobs:
           EVENTS_QUEUE_URL: ${{ env.ORCHESTRATOR_EVENTS_QUEUE_URL }}
         run: |
           set -euo pipefail
+          # O rollout status retorna com o pod antigo ainda em Terminating (grace de 45 s);
+          # ate sair, o listener dele termina o ultimo long poll e pode consumir a sonda
+          # SQS, cuja metrica ficaria num pod que nao e consultado. Espera ele sumir.
+          for _ in $(seq 1 30); do
+            terminating="$(kubectl get pods -n ${{ env.NAMESPACE }} -l app=${{ env.DEPLOYMENT }} -o json \
+                            | jq '[.items[] | select(.metadata.deletionTimestamp != null)] | length')"
+            [ "$terminating" -eq 0 ] && break
+            echo "Aguardando ${terminating} pod(s) do rollout anterior terminarem..."
+            sleep 3
+          done
+          [ "$terminating" -eq 0 ] || { echo "::error::Pods do rollout anterior ainda terminando apos 90 s."; exit 1; }
+
           urls=()
           port=18080
           # Pods em execucao, sem os que ainda estao terminando do rollout anterior.
